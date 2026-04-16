@@ -321,19 +321,19 @@ class TestExtractMedia:
 
 
 class TestExtractControlDirectives:
-    def test_extracts_silent_and_reaction_markers(self):
+    def test_extracts_silent_marker_only(self):
         directives, cleaned = BasePlatformAdapter.extract_control_directives(
             "[SILENT]\n[REACT_X]\n"
         )
-        assert directives == {"silent": True, "reaction": "x"}
-        assert cleaned == ""
+        assert directives == {"silent": True}
+        assert cleaned == "[REACT_X]"
 
-    def test_keeps_non_marker_text(self):
+    def test_keeps_non_silent_text(self):
         directives, cleaned = BasePlatformAdapter.extract_control_directives(
             "[react_check] done researching"
         )
-        assert directives == {"silent": False, "reaction": "white_check_mark"}
-        assert cleaned == "done researching"
+        assert directives == {"silent": False}
+        assert cleaned == "[react_check] done researching"
 
 
 # ---------------------------------------------------------------------------

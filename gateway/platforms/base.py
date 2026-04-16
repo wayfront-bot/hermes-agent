@@ -896,25 +896,13 @@ class BasePlatformAdapter(ABC):
 
         Supported markers:
         - ``[SILENT]`` suppresses message delivery while still allowing side effects.
-        - ``[REACT_CHECK]`` requests a ✅ reaction on the source message.
-        - ``[REACT_X]`` requests a ❌ reaction on the source message.
-
-        Returns a tuple of ``(directives, cleaned_content)`` where ``directives``
-        is a small dict like ``{"silent": True, "reaction": "x"}``.
         """
-        directives: Dict[str, Any] = {"silent": False, "reaction": None}
+        directives: Dict[str, Any] = {"silent": False}
         cleaned = content or ""
 
-        marker_map = {
-            "[SILENT]": ("silent", True),
-            "[REACT_CHECK]": ("reaction", "white_check_mark"),
-            "[REACT_X]": ("reaction", "x"),
-        }
-
-        for marker, (key, value) in marker_map.items():
-            if marker in cleaned.upper():
-                directives[key] = value
-                cleaned = re.sub(re.escape(marker), "", cleaned, flags=re.IGNORECASE)
+        if "[SILENT]" in cleaned.upper():
+            directives["silent"] = True
+            cleaned = re.sub(re.escape("[SILENT]"), "", cleaned, flags=re.IGNORECASE)
 
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         return directives, cleaned
@@ -1316,8 +1304,6 @@ class BasePlatformAdapter(ABC):
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
                 directives, response = self.extract_control_directives(response)
-                if isinstance(event.raw_message, dict):
-                    event.raw_message["_hermes_reaction"] = directives.get("reaction")
                 if directives.get("silent"):
                     response = ""
 

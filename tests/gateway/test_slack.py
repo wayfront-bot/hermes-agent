@@ -883,7 +883,7 @@ class TestReactions:
         )
 
     @pytest.mark.asyncio
-    async def test_on_processing_complete_uses_x_override(self, adapter):
+    async def test_on_processing_complete_ignores_reaction_override(self, adapter):
         adapter._app.client.reactions_add = AsyncMock()
         adapter._app.client.reactions_remove = AsyncMock()
         event = MessageEvent(
@@ -896,7 +896,7 @@ class TestReactions:
         await adapter.on_processing_complete(event, True)
 
         adapter._app.client.reactions_add.assert_called_once_with(
-            channel="C123", timestamp="ts1", name="x"
+            channel="C123", timestamp="ts1", name="white_check_mark"
         )
 
     @pytest.mark.asyncio

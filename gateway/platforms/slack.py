@@ -1292,21 +1292,11 @@ class SlackAdapter(BasePlatformAdapter):
         """Swap the in-progress reaction for the final outcome reaction."""
         channel_id = event.source.chat_id if event and event.source else ""
         message_id = event.message_id if event else ""
-        raw_message = getattr(event, "raw_message", None)
         if not channel_id or not message_id:
             return
 
         await self._remove_reaction(channel_id, message_id, "eyes")
-
-        reaction_override = None
-        if isinstance(raw_message, dict):
-            reaction_override = raw_message.get("_hermes_reaction")
-
-        if reaction_override:
-            final_emoji = reaction_override
-        else:
-            final_emoji = "white_check_mark" if success else "warning"
-
+        final_emoji = "white_check_mark" if success else "warning"
         await self._add_reaction(channel_id, message_id, final_emoji)
 
     # ----- Approval button support (Block Kit) -----
