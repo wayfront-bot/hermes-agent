@@ -1385,6 +1385,7 @@ def resolve_codex_runtime_credentials(
     should_refresh = bool(force_refresh)
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
+    recovered_cli_tokens: Optional[Dict[str, str]] = None
     if should_refresh:
         # Re-read under lock to avoid racing with other Hermes processes
         with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
@@ -1397,8 +1398,34 @@ def resolve_codex_runtime_credentials(
                 should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
 
             if should_refresh:
-                tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                try:
+                    tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
+                except AuthError:
+                    cli_tokens = _import_codex_cli_tokens() or {}
+                    cli_access = str(cli_tokens.get("access_token", "") or "").strip()
+                    cli_refresh = str(cli_tokens.get("refresh_token", "") or "").strip()
+                    current_refresh = str(tokens.get("refresh_token", "") or "").strip()
+                    if (
+                        cli_access
+                        and cli_refresh
+                        and cli_refresh != current_refresh
+                        and not _codex_access_token_is_expiring(cli_access, 0)
+                    ):
+                        logger.warning(
+                            "Codex refresh failed with stale Hermes token, recovering from ~/.codex/auth.json"
+                        )
+                        recovered_cli_tokens = {
+                            "access_token": cli_access,
+                            "refresh_token": cli_refresh,
+                        }
+                        tokens = dict(recovered_cli_tokens)
+                    else:
+                        raise
                 access_token = str(tokens.get("access_token", "") or "").strip()
+
+    if recovered_cli_tokens is not None:
+        _save_codex_tokens(recovered_cli_tokens)
+        data = _read_codex_tokens()
 
     base_url = (
         os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")

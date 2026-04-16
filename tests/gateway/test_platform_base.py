@@ -320,6 +320,22 @@ class TestExtractMedia:
         assert "After" in cleaned
 
 
+class TestExtractControlDirectives:
+    def test_extracts_silent_and_reaction_markers(self):
+        directives, cleaned = BasePlatformAdapter.extract_control_directives(
+            "[SILENT]\n[REACT_X]\n"
+        )
+        assert directives == {"silent": True, "reaction": "x"}
+        assert cleaned == ""
+
+    def test_keeps_non_marker_text(self):
+        directives, cleaned = BasePlatformAdapter.extract_control_directives(
+            "[react_check] done researching"
+        )
+        assert directives == {"silent": False, "reaction": "white_check_mark"}
+        assert cleaned == "done researching"
+
+
 # ---------------------------------------------------------------------------
 # truncate_message
 # ---------------------------------------------------------------------------

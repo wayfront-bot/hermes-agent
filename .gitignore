@@ -58,3 +58,7 @@ mini-swe-agent/
 # Nix
 .direnv/
 result
+
+# Local scratch workspace for one-off probes, QA scripts, and disposable artifacts
+.scratch/*
+!.scratch/README.md

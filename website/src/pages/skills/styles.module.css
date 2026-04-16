@@ -650,9 +650,12 @@
   display: flex;
   justify-content: center;
   margin-top: 1.5rem;
+  padding: 0 1rem;
 }
 
 .loadMoreBtn {
+  display: block;
+  max-width: 100%;
   font-family: "DM Sans", sans-serif;
   font-size: 0.85rem;
   font-weight: 500;
@@ -661,6 +664,9 @@
   border-radius: 8px;
   background: rgba(255, 215, 0, 0.04);
   color: rgba(255, 215, 0, 0.8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   cursor: pointer;
   transition: all 0.2s;
 }

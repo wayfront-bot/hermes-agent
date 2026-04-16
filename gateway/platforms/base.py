@@ -891,6 +891,35 @@ class BasePlatformAdapter(ABC):
         return media, cleaned
 
     @staticmethod
+    def extract_control_directives(content: str) -> Tuple[Dict[str, Any], str]:
+        """Extract internal gateway control markers from a response.
+
+        Supported markers:
+        - ``[SILENT]`` suppresses message delivery while still allowing side effects.
+        - ``[REACT_CHECK]`` requests a ✅ reaction on the source message.
+        - ``[REACT_X]`` requests a ❌ reaction on the source message.
+
+        Returns a tuple of ``(directives, cleaned_content)`` where ``directives``
+        is a small dict like ``{"silent": True, "reaction": "x"}``.
+        """
+        directives: Dict[str, Any] = {"silent": False, "reaction": None}
+        cleaned = content or ""
+
+        marker_map = {
+            "[SILENT]": ("silent", True),
+            "[REACT_CHECK]": ("reaction", "white_check_mark"),
+            "[REACT_X]": ("reaction", "x"),
+        }
+
+        for marker, (key, value) in marker_map.items():
+            if marker in cleaned.upper():
+                directives[key] = value
+                cleaned = re.sub(re.escape(marker), "", cleaned, flags=re.IGNORECASE)
+
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+        return directives, cleaned
+
+    @staticmethod
     def extract_local_files(content: str) -> Tuple[List[str], str]:
         """
         Detect bare local file paths in response text for native media delivery.
@@ -1285,6 +1314,13 @@ class BasePlatformAdapter(ABC):
             # DEBUG to avoid noisy warnings for expected behavior.
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+            if response:
+                directives, response = self.extract_control_directives(response)
+                if isinstance(event.raw_message, dict):
+                    event.raw_message["_hermes_reaction"] = directives.get("reaction")
+                if directives.get("silent"):
+                    response = ""
+
             if response:
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)

@@ -1686,6 +1686,19 @@ class GatewayRunner:
         if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK):
             return True
 
+        # Slack channels explicitly trusted for app/bot-originated automation
+        # messages bypass the per-user allowlist. This is channel-scoped, not
+        # a workspace-wide relaxation.
+        if source.platform == Platform.SLACK:
+            slack_cfg = getattr(getattr(self, "config", None), "platforms", {}).get(Platform.SLACK)
+            extra = getattr(slack_cfg, "extra", {}) or {}
+            trusted = extra.get("bot_message_channels") or []
+            if isinstance(trusted, str):
+                trusted = [part.strip() for part in trusted.split(",") if part.strip()]
+            trusted_channels = {str(channel).strip() for channel in trusted if str(channel).strip()}
+            if source.chat_id in trusted_channels:
+                return True
+
         user_id = source.user_id
         if not user_id:
             return False

@@ -303,9 +303,6 @@ export default function SkillsDashboard() {
     setExpandedCard(null);
   }, [search, sourceFilter, categoryFilter]);
 
-  const visible = filtered.slice(0, visibleCount);
-  const hasMore = visibleCount < filtered.length;
-
   const handleSourceChange = useCallback(
     (src: string) => {
       setSourceFilter(src);
@@ -313,6 +310,11 @@ export default function SkillsDashboard() {
     },
     []
   );
+
+  const visible = filtered.slice(0, visibleCount);
+  const hasMore = visibleCount < filtered.length;
+  const remainingCount = filtered.length - visibleCount;
+  const loadMoreLabel = `Show more (${remainingCount} remaining)`;
 
   const handleCategoryClick = useCallback((cat: string) => {
     setCategoryFilter(cat);
@@ -552,8 +554,9 @@ export default function SkillsDashboard() {
                     <button
                       className={styles.loadMoreBtn}
                       onClick={() => setVisibleCount((v) => v + PAGE_SIZE)}
+                      title={loadMoreLabel}
                     >
-                      Show more ({filtered.length - visibleCount} remaining)
+                      {loadMoreLabel}
                     </button>
                   </div>
                 )}

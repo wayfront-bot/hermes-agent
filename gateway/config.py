@@ -534,6 +534,10 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
+                if "free_response_channels" in platform_cfg:
+                    bridged["free_response_channels"] = platform_cfg["free_response_channels"]
+                if "bot_message_channels" in platform_cfg:
+                    bridged["bot_message_channels"] = platform_cfg["bot_message_channels"]
                 if not bridged:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})

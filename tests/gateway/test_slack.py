@@ -506,6 +506,56 @@ class TestMessageRouting:
         adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_channel_message_processed_in_free_response_channel(self):
+        """Allowlisted Slack channels should bypass the @mention requirement."""
+        config = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"free_response_channels": ["C123"]},
+        )
+        adapter = SlackAdapter(config)
+        adapter._app = MagicMock()
+        adapter._app.client = AsyncMock()
+        adapter._bot_user_id = "U_BOT"
+        adapter._running = True
+        adapter.handle_message = AsyncMock()
+
+        event = {
+            "text": "just talking",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_channel_message_processed_when_require_mention_disabled(self):
+        """SLACK require_mention=false should accept ordinary channel messages."""
+        config = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"require_mention": False},
+        )
+        adapter = SlackAdapter(config)
+        adapter._app = MagicMock()
+        adapter._app.client = AsyncMock()
+        adapter._bot_user_id = "U_BOT"
+        adapter._running = True
+        adapter.handle_message = AsyncMock()
+
+        event = {
+            "text": "just talking",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_channel_mention_strips_bot_id(self, adapter):
         """When mentioned in a channel, the bot mention should be stripped."""
         event = {
@@ -531,6 +581,99 @@ class TestMessageRouting:
             "ts": "1234567890.000001",
         }
         await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bot_messages_processed_in_allowlisted_channel(self):
+        """Configured channels may accept trusted external bot/app messages."""
+        config = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={
+                "free_response_channels": ["C123"],
+                "bot_message_channels": ["C123"],
+            },
+        )
+        adapter = SlackAdapter(config)
+        adapter._app = MagicMock()
+        adapter._app.client = AsyncMock()
+        adapter._bot_user_id = "U_BOT"
+        adapter._running = True
+        adapter.handle_message = AsyncMock()
+
+        event = {
+            "text": "New ticket: WG60RD",
+            "bot_id": "B_SUPPORT_APP",
+            "bot_profile": {"name": "Wayfront Support App"},
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_called_once()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.source.user_id == "bot:B_SUPPORT_APP"
+        assert msg_event.source.user_name == "Wayfront Support App"
+
+    @pytest.mark.asyncio
+    async def test_block_text_extracted_when_plain_text_empty(self):
+        config = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"free_response_channels": ["C123"]},
+        )
+        adapter = SlackAdapter(config)
+        adapter._app = MagicMock()
+        adapter._app.client = AsyncMock()
+        adapter._bot_user_id = "U_BOT"
+        adapter._running = True
+        adapter.handle_message = AsyncMock()
+
+        event = {
+            "text": "",
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "New ticket: WG60RD"},
+                }
+            ],
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_called_once()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "New ticket: WG60RD"
+
+    @pytest.mark.asyncio
+    async def test_own_bot_messages_still_ignored_in_allowlisted_channel(self):
+        """Allowlisted bot-message channels must not self-trigger on Hermes replies."""
+        config = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"bot_message_channels": ["C123"]},
+        )
+        adapter = SlackAdapter(config)
+        adapter._app = MagicMock()
+        adapter._app.client = AsyncMock()
+        adapter._bot_user_id = "U_BOT"
+        adapter._running = True
+        adapter.handle_message = AsyncMock()
+        adapter._bot_message_ts.add("1234567890.000001")
+
+        event = {
+            "text": "Hermes reply",
+            "bot_id": "B_HERMES",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+
         adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
@@ -675,7 +818,7 @@ class TestReactions:
 
     @pytest.mark.asyncio
     async def test_reactions_in_message_flow(self, adapter):
-        """Reactions should be added on receipt and swapped on completion."""
+        """Receipt should add 👀 immediately; completion swaps happen in the hook."""
         adapter._app.client.reactions_add = AsyncMock()
         adapter._app.client.reactions_remove = AsyncMock()
         adapter._app.client.users_info = AsyncMock(return_value={
@@ -691,14 +834,91 @@ class TestReactions:
         }
         await adapter._handle_slack_message(event)
 
-        # Should have added 👀, then removed 👀, then added ✅
         add_calls = adapter._app.client.reactions_add.call_args_list
         remove_calls = adapter._app.client.reactions_remove.call_args_list
-        assert len(add_calls) == 2
+        assert len(add_calls) == 1
         assert add_calls[0].kwargs["name"] == "eyes"
-        assert add_calls[1].kwargs["name"] == "white_check_mark"
-        assert len(remove_calls) == 1
-        assert remove_calls[0].kwargs["name"] == "eyes"
+        assert len(remove_calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_thread_replies_still_get_reactions_by_default(self, adapter):
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        event = {
+            "text": "thread reply",
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": "im",
+            "thread_ts": "1234567890.000000",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+
+        adapter._app.client.reactions_add.assert_called_once_with(
+            channel="D123", timestamp="1234567890.000001", name="eyes"
+        )
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_defaults_to_check_mark(self, adapter):
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        event = MessageEvent(
+            text="hello",
+            source=adapter.build_source(chat_id="C123", user_id="U_USER"),
+            raw_message={},
+            message_id="ts1",
+        )
+
+        await adapter.on_processing_complete(event, True)
+
+        adapter._app.client.reactions_remove.assert_called_once_with(
+            channel="C123", timestamp="ts1", name="eyes"
+        )
+        adapter._app.client.reactions_add.assert_called_once_with(
+            channel="C123", timestamp="ts1", name="white_check_mark"
+        )
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_uses_x_override(self, adapter):
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        event = MessageEvent(
+            text="hello",
+            source=adapter.build_source(chat_id="C123", user_id="U_USER"),
+            raw_message={"_hermes_reaction": "x"},
+            message_id="ts1",
+        )
+
+        await adapter.on_processing_complete(event, True)
+
+        adapter._app.client.reactions_add.assert_called_once_with(
+            channel="C123", timestamp="ts1", name="x"
+        )
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_reacts_to_thread_replies_by_default(self, adapter):
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        event = MessageEvent(
+            text="hello",
+            source=adapter.build_source(chat_id="C123", user_id="U_USER", thread_id="root_ts"),
+            raw_message={"thread_ts": "root_ts", "ts": "reply_ts"},
+            message_id="reply_ts",
+            reply_to_message_id="root_ts",
+        )
+
+        await adapter.on_processing_complete(event, True)
+
+        adapter._app.client.reactions_remove.assert_called_once_with(
+            channel="C123", timestamp="reply_ts", name="eyes"
+        )
+        adapter._app.client.reactions_add.assert_called_once_with(
+            channel="C123", timestamp="reply_ts", name="white_check_mark"
+        )
 
 
 # ---------------------------------------------------------------------------

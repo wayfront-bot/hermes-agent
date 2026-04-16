@@ -223,6 +223,42 @@ class TestLoadGatewayConfig:
         assert config.unauthorized_dm_behavior == "ignore"
         assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
 
+    def test_bridges_slack_free_response_channels_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "slack:\n"
+            "  free_response_channels:\n"
+            "    - C123\n"
+            "    - C456\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.SLACK].extra["free_response_channels"] == ["C123", "C456"]
+
+    def test_bridges_slack_bot_message_channels_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "slack:\n"
+            "  bot_message_channels:\n"
+            "    - C123\n"
+            "    - C456\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.SLACK].extra["bot_message_channels"] == ["C123", "C456"]
+
 
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already

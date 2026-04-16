@@ -14,7 +14,7 @@ import logging
 import os
 import re
 import time
-from typing import Dict, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple
 
 try:
     from slack_bolt.async_app import AsyncApp
@@ -67,6 +67,130 @@ class SlackAdapter(BasePlatformAdapter):
     """
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
+
+    def _slack_require_mention(self) -> bool:
+        """Return whether channel messages require an explicit @mention."""
+        configured = self.config.extra.get("require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("SLACK_REQUIRE_MENTION", "true").lower() in (
+            "true",
+            "1",
+            "yes",
+            "on",
+        )
+
+    def _slack_free_response_channels(self) -> set[str]:
+        """Return channel IDs where Slack should respond without @mentions."""
+        raw = self.config.extra.get("free_response_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_FREE_RESPONSE_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str):
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        return set()
+
+    def _slack_bot_message_channels(self) -> set[str]:
+        """Return channel IDs where trusted external bot/app messages are allowed."""
+        raw = self.config.extra.get("bot_message_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_BOT_MESSAGE_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str):
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        return set()
+
+    @staticmethod
+    def _is_bot_message_event(event: dict) -> bool:
+        """Return whether a Slack event represents a bot/app-authored message."""
+        return bool(event.get("bot_id") or event.get("subtype") == "bot_message")
+
+    @classmethod
+    def _extract_text_from_slack_blocks(cls, value: Any) -> List[str]:
+        """Recursively extract human-readable text from Slack blocks/elements."""
+        parts: List[str] = []
+
+        if isinstance(value, list):
+            for item in value:
+                parts.extend(cls._extract_text_from_slack_blocks(item))
+            return parts
+
+        if not isinstance(value, dict):
+            if isinstance(value, str):
+                text = value.strip()
+                if text:
+                    parts.append(text)
+            return parts
+
+        text_type = value.get("type")
+        if text_type in {"plain_text", "mrkdwn", "text", "link"}:
+            text_value = value.get("text") or value.get("url") or ""
+            if isinstance(text_value, str) and text_value.strip():
+                parts.append(text_value.strip())
+
+        for key in (
+            "text",
+            "title",
+            "fallback",
+            "alt_text",
+            "value",
+            "url",
+            "elements",
+            "fields",
+            "blocks",
+            "attachments",
+        ):
+            nested = value.get(key)
+            if nested is not None:
+                parts.extend(cls._extract_text_from_slack_blocks(nested))
+
+        return parts
+
+    @classmethod
+    def _extract_slack_event_text(cls, event: dict) -> str:
+        """Build best-effort message text from Slack text, blocks, and attachments."""
+        parts: List[str] = []
+
+        raw_text = event.get("text") or ""
+        if isinstance(raw_text, str) and raw_text.strip():
+            parts.append(raw_text.strip())
+
+        parts.extend(cls._extract_text_from_slack_blocks(event.get("blocks") or []))
+        parts.extend(cls._extract_text_from_slack_blocks(event.get("attachments") or []))
+
+        seen = set()
+        deduped: List[str] = []
+        for part in parts:
+            normalized = re.sub(r"\s+", " ", part).strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                deduped.append(normalized)
+
+        return "\n".join(deduped)
+
+    def _is_own_bot_message(self, event: dict, team_id: str = "") -> bool:
+        """Return whether a bot/app message came from this Hermes bot."""
+        event_ts = event.get("ts", "")
+        if event_ts and event_ts in self._bot_message_ts:
+            return True
+        bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+        if bot_uid and event.get("user") == bot_uid:
+            return True
+        return False
+
+    def _is_allowed_external_bot_message(
+        self, event: dict, channel_id: str = "", team_id: str = ""
+    ) -> bool:
+        """Allow configured external app/bot messages while still skipping our own."""
+        if not self._is_bot_message_event(event):
+            return False
+        if channel_id not in self._slack_bot_message_channels():
+            return False
+        return not self._is_own_bot_message(event, team_id=team_id)
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SLACK)
@@ -914,8 +1038,17 @@ class SlackAdapter(BasePlatformAdapter):
                     if v > cutoff
                 }
 
-        # Ignore bot messages (including our own)
-        if event.get("bot_id") or event.get("subtype") == "bot_message":
+        channel_id = event.get("channel", "")
+        team_id = event.get("team") or event.get("team_id") or ""
+        is_allowed_external_bot_message = self._is_allowed_external_bot_message(
+            event,
+            channel_id=channel_id,
+            team_id=team_id,
+        )
+
+        # Ignore bot messages by default. Channel-scoped exceptions are only for
+        # trusted external app/bot producers, never our own replies.
+        if self._is_bot_message_event(event) and not is_allowed_external_bot_message:
             return
 
         # Ignore message edits and deletions
@@ -923,8 +1056,7 @@ class SlackAdapter(BasePlatformAdapter):
         if subtype in ("message_changed", "message_deleted"):
             return
 
-        text = event.get("text", "")
-        channel_id = event.get("channel", "")
+        text = self._extract_slack_event_text(event)
         ts = event.get("ts", "")
         assistant_meta = self._lookup_assistant_thread_metadata(
             event,
@@ -932,6 +1064,9 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts=event.get("thread_ts", ""),
         )
         user_id = event.get("user") or assistant_meta.get("user_id", "")
+        if not user_id and is_allowed_external_bot_message:
+            bot_sender_id = event.get("bot_id") or event.get("app_id") or "slack-bot"
+            user_id = f"bot:{bot_sender_id}"
         if not channel_id:
             channel_id = assistant_meta.get("channel_id", "")
         team_id = (
@@ -961,14 +1096,18 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
 
         # In channels, respond if:
-        #   1. The bot is @mentioned in this message, OR
-        #   2. The message is a reply in a thread the bot started/participated in, OR
-        #   3. The message is in a thread where the bot was previously @mentioned, OR
-        #   4. There's an existing session for this thread (survives restarts)
+        #   1. The channel is allowlisted for free-response, OR
+        #   2. Mention-gating is disabled for Slack, OR
+        #   3. The bot is @mentioned in this message, OR
+        #   4. The message is a reply in a thread the bot started/participated in, OR
+        #   5. The message is in a thread where the bot was previously @mentioned, OR
+        #   6. There's an existing session for this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         is_mentioned = bot_uid and f"<@{bot_uid}>" in text
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+        free_response_channel = channel_id in self._slack_free_response_channels()
+        require_mention = self._slack_require_mention()
 
         if not is_dm and bot_uid and not is_mentioned:
             reply_to_bot_thread = (
@@ -986,7 +1125,13 @@ class SlackAdapter(BasePlatformAdapter):
                     user_id=user_id,
                 )
             )
-            if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
+            if (
+                not free_response_channel
+                and require_mention
+                and not reply_to_bot_thread
+                and not in_mentioned_thread
+                and not has_session
+            ):
                 return
 
         if is_mentioned:
@@ -1104,8 +1249,19 @@ class SlackAdapter(BasePlatformAdapter):
                 except Exception as e:  # pragma: no cover - defensive logging
                     logger.warning("[Slack] Failed to cache document from %s: %s", url, e, exc_info=True)
 
-        # Resolve user display name (cached after first lookup)
-        user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
+        # Resolve sender display name. External app/bot messages may not have a
+        # Slack user ID, so fall back to bot profile metadata instead of
+        # calling users.info with a synthetic identifier.
+        if is_allowed_external_bot_message and user_id.startswith("bot:"):
+            bot_profile = event.get("bot_profile") or {}
+            user_name = (
+                bot_profile.get("name")
+                or event.get("username")
+                or event.get("app_id")
+                or user_id
+            )
+        else:
+            user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
 
         # Build source
         source = self.build_source(
@@ -1128,14 +1284,30 @@ class SlackAdapter(BasePlatformAdapter):
             reply_to_message_id=thread_ts if thread_ts != ts else None,
         )
 
-        # Add 👀 reaction to acknowledge receipt
         await self._add_reaction(channel_id, ts, "eyes")
 
         await self.handle_message(msg_event)
 
-        # Replace 👀 with ✅ when done
-        await self._remove_reaction(channel_id, ts, "eyes")
-        await self._add_reaction(channel_id, ts, "white_check_mark")
+    async def on_processing_complete(self, event, success: bool) -> None:
+        """Swap the in-progress reaction for the final outcome reaction."""
+        channel_id = event.source.chat_id if event and event.source else ""
+        message_id = event.message_id if event else ""
+        raw_message = getattr(event, "raw_message", None)
+        if not channel_id or not message_id:
+            return
+
+        await self._remove_reaction(channel_id, message_id, "eyes")
+
+        reaction_override = None
+        if isinstance(raw_message, dict):
+            reaction_override = raw_message.get("_hermes_reaction")
+
+        if reaction_override:
+            final_emoji = reaction_override
+        else:
+            final_emoji = "white_check_mark" if success else "warning"
+
+        await self._add_reaction(channel_id, message_id, final_emoji)
 
     # ----- Approval button support (Block Kit) -----
 
@@ -1330,11 +1502,26 @@ class SlackAdapter(BasePlatformAdapter):
                 # Skip the current message (the one that triggered this fetch)
                 if msg_ts == current_ts:
                     continue
-                # Skip bot messages from ourselves
-                if msg.get("bot_id") or msg.get("subtype") == "bot_message":
-                    continue
+                # Skip bot messages by default, but keep configured external app
+                # messages so threaded investigations retain their context.
+                if self._is_bot_message_event(msg):
+                    if not self._is_allowed_external_bot_message(
+                        msg,
+                        channel_id=channel_id,
+                        team_id=team_id,
+                    ):
+                        continue
+                    bot_profile = msg.get("bot_profile") or {}
+                    name = (
+                        bot_profile.get("name")
+                        or msg.get("username")
+                        or msg.get("app_id")
+                        or "bot"
+                    )
+                else:
+                    msg_user = msg.get("user", "unknown")
+                    name = await self._resolve_user_name(msg_user, chat_id=channel_id)
 
-                msg_user = msg.get("user", "unknown")
                 msg_text = msg.get("text", "").strip()
                 if not msg_text:
                     continue
@@ -1348,8 +1535,6 @@ class SlackAdapter(BasePlatformAdapter):
                 is_parent = msg_ts == thread_ts
                 prefix = "[thread parent] " if is_parent else ""
 
-                # Resolve user name (cached)
-                name = await self._resolve_user_name(msg_user, chat_id=channel_id)
                 context_parts.append(f"{prefix}{name}: {msg_text}")
 
             if not context_parts:

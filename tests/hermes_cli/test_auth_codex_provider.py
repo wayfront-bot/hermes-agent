@@ -122,6 +122,35 @@ def test_resolve_codex_runtime_credentials_force_refresh(tmp_path, monkeypatch):
     assert resolved["api_key"] == "access-forced"
 
 
+def test_resolve_codex_runtime_credentials_recovers_from_cli_tokens_on_refresh_failure(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    expired_token = _jwt_with_exp(int(time.time()) - 10)
+    _setup_hermes_auth(hermes_home, access_token=expired_token, refresh_token="refresh-stale")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    cli_tokens = {
+        "access_token": _jwt_with_exp(int(time.time()) + 3600),
+        "refresh_token": "refresh-fresh",
+    }
+
+    def _fake_refresh(tokens, timeout_seconds):
+        raise AuthError(
+            "Codex token refresh failed: session revoked",
+            provider="openai-codex",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_codex_auth_tokens", _fake_refresh)
+    monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", lambda: dict(cli_tokens))
+
+    resolved = resolve_codex_runtime_credentials()
+    stored = _read_codex_tokens()
+
+    assert resolved["api_key"] == cli_tokens["access_token"]
+    assert stored["tokens"] == cli_tokens
+
+
 def test_resolve_provider_explicit_codex_does_not_fallback(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

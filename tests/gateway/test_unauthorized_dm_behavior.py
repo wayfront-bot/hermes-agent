@@ -130,6 +130,32 @@ def test_star_wildcard_works_for_any_platform(monkeypatch):
     assert runner._is_user_authorized(source) is True
 
 
+def test_slack_bot_message_channel_bypasses_user_allowlist(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    runner, _adapter = _make_runner(
+        Platform.SLACK,
+        GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(
+                    enabled=True,
+                    token="***",
+                    extra={"bot_message_channels": ["C123"]},
+                )
+            }
+        ),
+    )
+
+    source = SessionSource(
+        platform=Platform.SLACK,
+        user_id="U0ARF7C2TFY",
+        chat_id="C123",
+        user_name="Wayfront",
+        chat_type="group",
+    )
+    assert runner._is_user_authorized(source) is True
+
+
 @pytest.mark.asyncio
 async def test_unauthorized_dm_pairs_by_default(monkeypatch):
     _clear_auth_env(monkeypatch)
