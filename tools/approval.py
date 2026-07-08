@@ -1593,18 +1593,65 @@ def _has_allowlist_shell_operator(command: str) -> bool:
     return bool(_ALLOWLIST_SHELL_OPERATOR_RE.search(command or ""))
 
 
+_COMMAND_PREFIX_SENTINEL = "=prefix:"
+
+
+def _extract_command_token(command: str) -> str:
+    """Return the executable token from a shell command string."""
+    normalized = _normalize_command_for_detection(command).strip()
+    if not normalized:
+        return ""
+    try:
+        parts = shlex.split(normalized, posix=True)
+    except ValueError:
+        parts = normalized.split()
+    return parts[0] if parts else ""
+
+
+def _command_entry_matches_token(entry: str, command_token: str) -> bool:
+    """Return whether a command_allowlist entry matches the executable token.
+
+    Supported token-scoped formats:
+    - ``=prefix:op-sa`` for a binary name on PATH
+    - ``=prefix:/abs/path/to/binary`` for an exact executable path
+    - legacy absolute-path entries like ``/usr/bin/head``
+    """
+    if not entry or not command_token:
+        return False
+
+    candidate = entry.strip()
+    if not candidate:
+        return False
+
+    if candidate.startswith(_COMMAND_PREFIX_SENTINEL):
+        candidate = candidate[len(_COMMAND_PREFIX_SENTINEL):].strip()
+        if not candidate:
+            return False
+        if "/" not in candidate:
+            return os.path.basename(command_token) == candidate
+        return os.path.expanduser(command_token) == os.path.expanduser(candidate)
+
+    if "/" in candidate and " " not in candidate:
+        return os.path.expanduser(command_token) == os.path.expanduser(candidate)
+
+    return False
+
+
 def _command_matches_permanent_allowlist(command: str) -> bool:
-    """Return True when command_allowlist contains this command or a glob.
+    """Return True when command_allowlist contains this command, executable, or a glob.
 
     Permanent approvals historically store dangerous-pattern keys such as
     ``recursive delete``. Manual entries in ``command_allowlist`` are command
-    text, and may include shell-style wildcards like ``podman *``.
+    text, shell-style wildcards like ``podman *``, or explicit executable
+    bypasses like ``=prefix:op-sa``.
     """
     command = (command or "").strip()
     if not command:
         return False
     if _has_allowlist_shell_operator(command):
         return False
+
+    command_token = _extract_command_token(command)
 
     with _lock:
         patterns = tuple(_permanent_approved)
@@ -1616,6 +1663,8 @@ def _command_matches_permanent_allowlist(command: str) -> bool:
         if not pattern:
             continue
         if command == pattern:
+            return True
+        if _command_entry_matches_token(pattern, command_token):
             return True
         if any(ch in pattern for ch in "*?[") and fnmatch.fnmatchcase(command, pattern):
             return True

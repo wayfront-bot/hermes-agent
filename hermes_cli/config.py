@@ -2544,7 +2544,9 @@ DEFAULT_CONFIG = {
         "destructive_slash_confirm": True,
     },
 
-    # Permanently allowed dangerous command patterns (added via "always" approval)
+    # Permanently allowed dangerous command patterns (added via "always" approval),
+    # command text/globs, plus explicit executable bypasses like "=prefix:op-sa"
+    # or "=prefix:/abs/path/to/binary".
     "command_allowlist": [],
     # User-defined quick commands that bypass the agent loop (type: exec only)
     "quick_commands": {},

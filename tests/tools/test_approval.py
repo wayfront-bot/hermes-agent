@@ -69,6 +69,40 @@ class TestSmartApproval:
         assert mock_call.call_args.kwargs["max_tokens"] == 16
 
 
+class TestCommandPrefixAllowlist:
+    def test_prefix_entry_bypasses_dangerous_command_prompt(self):
+        with mock_patch.object(approval_module, "_permanent_approved", {"=prefix:python3"}), \
+             mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False):
+            result = approval_module.check_all_command_guards("python3 -c 'print(1)'", "local")
+        assert result["approved"] is True
+        assert result["message"] is None
+
+    def test_prefix_entry_matches_full_path_binary(self):
+        with mock_patch.object(approval_module, "_permanent_approved", {"=prefix:op-sa"}), \
+             mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False):
+            result = approval_module.check_all_command_guards(
+                "/Users/claw/.local/bin/op-sa whoami",
+                "local",
+            )
+        assert result["approved"] is True
+        assert result["message"] is None
+
+    def test_legacy_absolute_path_entry_matches_binary(self):
+        with mock_patch.object(approval_module, "_permanent_approved", {"/usr/bin/python3"}), \
+             mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=False):
+            result = approval_module.check_all_command_guards("/usr/bin/python3 -c 'print(1)'", "local")
+        assert result["approved"] is True
+        assert result["message"] is None
+
+    def test_unmatched_prefix_does_not_bypass_prompt(self):
+        with mock_patch.object(approval_module, "_permanent_approved", {"=prefix:op-sa"}), \
+             mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1", "HERMES_EXEC_ASK": ""}, clear=False), \
+             mock_patch("tools.approval.prompt_dangerous_approval", return_value="deny"):
+            result = approval_module.check_dangerous_command("python3 -c 'print(1)'", "local")
+        assert result["approved"] is False
+        assert result["pattern_key"] == "script execution via -e/-c flag"
+
+
 class TestDetectDangerousRm:
     def test_rm_rf_detected(self):
         is_dangerous, key, desc = detect_dangerous_command("rm -rf /home/user")
